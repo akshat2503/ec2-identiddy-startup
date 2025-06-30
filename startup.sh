@@ -75,7 +75,7 @@ print_status "SSL certificates generated successfully in ./certs/"
 print_status "Downloading docker-compose file..."
 
 # TODO: Replace with actual URL
-DOCKER_COMPOSE_URL="https://your-url-here/docker-compose.yml"
+DOCKER_COMPOSE_URL="https://raw.githubusercontent.com/akshat2503/ec2-identiddy-startup/refs/heads/main/docker-compose.yml"
 
 if [ -f "docker-compose.yml" ]; then
     print_warning "docker-compose.yml already exists. Creating backup..."
@@ -98,17 +98,53 @@ fi
 
 print_status "Docker compose file downloaded successfully"
 
-# Step 4: Check if Docker and Docker Compose are installed
+# Step 4: Install Docker if not already installed
 print_status "Checking Docker installation..."
 
 if ! command_exists docker; then
-    print_error "Docker is not installed. Please install Docker first."
-    exit 1
+    print_status "Docker is not installed. Installing Docker..."
+    
+    # Add Docker's official GPG key:
+    print_status "Updating package index..."
+    sudo apt-get update
+    
+    print_status "Installing prerequisites..."
+    sudo apt-get install -y ca-certificates curl
+    
+    print_status "Setting up Docker GPG key..."
+    sudo install -m 0755 -d /etc/apt/keyrings
+    sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+    sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+    # Add the repository to Apt sources:
+    print_status "Adding Docker repository..."
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+      $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" | \
+      sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+    
+    print_status "Updating package index with Docker repository..."
+    sudo apt-get update
+    
+    print_status "Installing Docker packages..."
+    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    
+    print_status "Docker installation completed!"
+    
+    # Add current user to docker group to avoid using sudo for docker commands
+    print_status "Adding current user to docker group..."
+    sudo usermod -aG docker $USER
+    print_warning "You may need to log out and back in for docker group changes to take effect."
+else
+    print_status "Docker is already installed."
 fi
 
-if ! command_exists docker-compose && ! docker compose version >/dev/null 2>&1; then
-    print_error "Docker Compose is not installed. Please install Docker Compose first."
+# Verify Docker Compose is available
+if ! docker compose version >/dev/null 2>&1; then
+    print_error "Docker Compose plugin is not available. Please check Docker installation."
     exit 1
+else
+    print_status "Docker Compose is available."
 fi
 
 # Step 5: Set environment variables for the application
