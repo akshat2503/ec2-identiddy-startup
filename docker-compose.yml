@@ -1,0 +1,149 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: keycloak-postgres
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - keycloak-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  keycloak:
+    image: public.ecr.aws/q2f1i2y5/loadbearer
+    container_name: keycloak
+    environment:
+      # Database connection
+      KC_DB: postgres
+      KC_DB_URL_HOST: postgres
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_URL_PORT: 5432
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak_password
+      KC_DB_SCHEMA: public
+      # Keycloak admin credentials
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      # Keycloak configuration
+      KC_HTTPS_CERTIFICATE_FILE: /opt/keycloak/conf/server.crt
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /opt/keycloak/conf/server.key
+      KC_HOSTNAME_STRICT: false
+      KC_HOSTNAME_STRICT_HTTPS: false
+      KC_HEALTH_ENABLED: true
+      KC_METRICS_ENABLED: true
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+    volumes:
+      - ./certs:/opt/keycloak/conf
+    networks:
+      - keycloak-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    command: ["start-dev"]
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000;echo -e 'GET /health/ready HTTP/1.1\r\nhost: http://localhost\r\nConnection: close\r\n\r\n' >&3;if [ $? -eq 0 ]; then echo 'Healthcheck Successful';exit 0;else echo 'Healthcheck Failed';exit 1;fi;"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 90s
+
+  backend:
+    image: akshatgautam/keywrap
+    container_name: keywrap-backend
+    environment:
+      # Keycloak Configuration
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: aws-sso
+      KEYCLOAK_ADMIN_REALM: master
+      KEYCLOAK_CLIENT_ID: aws-console
+      KEYCLOAK_ADMIN_USER: admin
+      KEYCLOAK_ADMIN_PASS: admin
+      # Database Configuration
+      DB_TYPE: sqlite
+      DB_NAME: data/keywrap.db
+      # AWS Configuration
+      AWS_REGION: us-east-1
+      AWS_SWITCH_ROLE_NAME: CloudKeeper-SSO-Role-Finalboss
+      AWS_SAML_PROVIDER_NAME: KeyCloakProvider
+      # Server Configuration
+      PORT: 8090
+    ports:
+      - "8090:8090"
+    volumes:
+      - keywrap_data:/app/data
+    networks:
+      - keycloak-network
+    restart: unless-stopped
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8090/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+      
+  keywrap-proxy:
+    image: akshatgautam/keywrap-proxy
+    container_name: keywrap-saml-proxy
+    ports:
+      - "9010:9010"
+    networks:
+      - keycloak-network
+    restart: unless-stopped
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9010/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  frontend:
+    image: akshatgautam/keywrap-front
+    container_name: keywrap-frontend
+    ports:
+      - "80:80"
+    networks:
+      - keycloak-network
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+      keywrap-proxy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "ps aux | grep -v grep | grep -q 'node\\|nginx\\|httpd' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  postgres_data:
+  keywrap_data:
+
+networks:
+  keycloak-network:
+    driver: bridge
